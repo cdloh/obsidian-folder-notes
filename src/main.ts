@@ -1,5 +1,5 @@
 import { Plugin, TFile, TFolder, TAbstractFile, Notice, Keymap } from 'obsidian';
-import { DEFAULT_SETTINGS, FolderNotesSettings, SettingsTab } from './settings';
+import { DEFAULT_SETTINGS, ExcludedFolder, FolderNotesSettings, SettingsTab } from './settings';
 import FolderNameModal from './modals/folderName';
 import { applyTemplate } from './template';
 import { Commands } from './commands';
@@ -53,15 +53,10 @@ export default class FolderNotesPlugin extends Plugin {
 			if (!this.settings.autoCreate) return;
 			if (!(folder instanceof TFolder)) return;
 
-			const excludedFolder = this.settings.excludeFolders.find(
-				(excludedFolder) => (excludedFolder.path === folder.path) ||
-					(excludedFolder.path === folder.path?.slice(0, folder?.path.lastIndexOf('/') >= 0 ?
-						folder.path?.lastIndexOf('/') : folder.path.length)
-						&& excludedFolder.subFolders));
-			if (excludedFolder?.disableAutoCreate) return;
+			const excludedFolder = this.getExcludedFolderByPath(folder.path)
+			if (excludedFolder && excludedFolder.disableAutoCreate) return;
 
 			const path = folder.path + '/' + folder.name + '.md';
-			if (!path) return;
 			const file = this.app.vault.getAbstractFileByPath(path);
 			if (file) return;
 			this.createFolderNote(path, true, true);
@@ -70,6 +65,8 @@ export default class FolderNotesPlugin extends Plugin {
 
 		this.registerEvent(this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
 			if (!this.settings.syncFolderName) return;
+			const oldFileName = this.getNameFromPathString(oldPath)
+			const oldFilePath = this.getPathFromString(oldPath)
 			if (file instanceof TFolder) {
 				const folder = this.app.vault.getAbstractFileByPath(file?.path);
 				if (!folder) return;
@@ -87,42 +84,29 @@ export default class FolderNotesPlugin extends Plugin {
 						folders.push(excludedFolder.path);
 					}
 
-					const oldName = oldPath.substring(oldPath.lastIndexOf('/' || '\\') >= 0 ? oldPath.lastIndexOf('/') : 0);
-					folders[folders.indexOf(oldName.replace('/', ''))] = folder.name;
+					folders[folders.indexOf(oldFileName)] = folder.name;
 					excludedFolder.path = folders.join('/');
 				});
 				this.saveSettings();
-				const excludedFolder = this.settings.excludeFolders.find(
-					(excludedFolder) => (excludedFolder.path === oldPath) ||
-						(excludedFolder.path === oldPath?.slice(0, oldPath.lastIndexOf('/') >= 0 ?
-							oldPath.lastIndexOf('/') : oldPath.length)
-							&& excludedFolder.subFolders));
-				if (excludedFolder?.disableSync) return;
+				const excludedFolder = this.getExcludedFolderByPath(oldPath)
+				if (excludedFolder && excludedFolder.disableSync) return;
 
-				const oldName = oldPath.substring(oldPath.lastIndexOf('/' || '\\')).replace('/', '');
 				const newPath = folder?.path + '/' + folder?.name + '.md';
 				if (!(folder instanceof TFolder)) return;
-				const note = this.app.vault.getAbstractFileByPath(oldPath + '/' + oldName + '.md');
+				const note = this.app.vault.getAbstractFileByPath(oldPath + '/' + oldFileName + '.md');
 				if (!note) return;
-				(note as any).path = folder.path + '/' + oldName + '.md';
+				(note as TFile).path = folder.path + '/' + oldFileName + '.md';
 				this.app.vault.rename(note, newPath);
 
 			} else if (file instanceof TFile) {
-				const folder = this.app.vault.getAbstractFileByPath(oldPath.substring(0,
-					oldPath.lastIndexOf('/' || '\\') >= 0 ? oldPath.lastIndexOf('/') : oldPath.length));
-				if (folder?.name + '.md' === file.name) return;
-				const oldFileName = oldPath.substring(oldPath.lastIndexOf('/' || '\\') >= 0 ? oldPath.lastIndexOf('/') + 1 : oldPath.length);
-
+				const folder = this.app.vault.getAbstractFileByPath(oldFilePath);
 				if (!folder) return;
+				if (folder.name + '.md' === file.name) return;
 
-				const excludedFolder = this.settings.excludeFolders.find(
-					(excludedFolder) => (excludedFolder.path === folder.path) ||
-						(excludedFolder.path === folder.path?.slice(0, folder?.path.lastIndexOf('/') >= 0 ?
-							folder.path?.lastIndexOf('/') : folder.path.length)
-							&& excludedFolder.subFolders));
-				if (excludedFolder?.disableSync) return;
-				if (oldFileName !== folder?.name + '.md') return;
-				let newFolderPath = file.path.slice(0, file.path.lastIndexOf('/') >= 0 ? file.path.lastIndexOf('/') : file.path.length);
+				const excludedFolder = this.getExcludedFolderByPath(folder.path)
+				if (excludedFolder && excludedFolder.disableSync) return;
+				if (oldFileName !== folder.name + '.md') return;
+				let newFolderPath = this.getPathFromString(file.path);
 				if (newFolderPath.lastIndexOf('/') > 0) {
 					newFolderPath = newFolderPath.slice(0, newFolderPath.lastIndexOf('/')) + '/';
 				} else {
@@ -134,13 +118,11 @@ export default class FolderNotesPlugin extends Plugin {
 					return new Notice('A folder with the same name already exists');
 				}
 				if (folder instanceof TFolder) {
+					let newPath = file.basename;
 					if (folder.path.indexOf('/') >= 0) {
-						this.app.vault.rename(folder, folder.path.substring(0,
-							folder.path.lastIndexOf('/' || '\\') >= 0 ? folder.path.lastIndexOf('/') : folder.path.length) + '/' +
-							file.name.substring(0, file.name.lastIndexOf('.')));
-					} else {
-						this.app.vault.rename(folder, file.name.substring(0, file.name.lastIndexOf('.')));
+						newPath = this.getPathFromString(folder.path) + '/' + newPath;
 					}
+					this.app.vault.rename(folder, newPath);
 				}
 			}
 		}));
@@ -149,18 +131,11 @@ export default class FolderNotesPlugin extends Plugin {
 	async handleFolderClick(event: MouseEvent) {
 		if (!(event.target instanceof HTMLElement)) return;
 		event.stopImmediatePropagation();
-		if (!document.body.classList.contains('folder-notes-plugin')) {
-			event.target.onclick = null;
-			event.target.click();
-			return;
-		}
 
 		const folder = event.target.parentElement?.getAttribute('data-path');
-		const excludedFolder = this.settings.excludeFolders.find(
-			(excludedFolder) => (excludedFolder.path === folder) ||
-				(excludedFolder.path === folder?.slice(0, folder?.lastIndexOf('/') >= 0 ? folder?.lastIndexOf('/') : folder.length)
-					&& excludedFolder.subFolders));
-		if (excludedFolder?.disableFolderNote) {
+		if(!folder) { return }
+		const excludedFolder = this.getExcludedFolderByPath(folder);
+		if (excludedFolder && excludedFolder.disableFolderNote) {
 			event.target.onclick = null;
 			event.target.click();
 			event.target.parentElement?.parentElement?.getElementsByClassName('nav-folder-children').item(0)?.querySelectorAll('div.nav-file')
@@ -170,11 +145,12 @@ export default class FolderNotesPlugin extends Plugin {
 					}
 				});
 			return;
-		} else if (excludedFolder?.enableCollapsing || this.settings.enableCollapsing) {
+		} else if (excludedFolder && excludedFolder.enableCollapsing || this.settings.enableCollapsing) {
 			event.target.onclick = null;
 			event.target.click();
 		}
 		const path = folder + '/' + event.target.innerText + '.md';
+
 		if (this.app.vault.getAbstractFileByPath(path)) {
 			event.target.classList.remove('has-not-folder-note');
 			event.target.classList.add('has-folder-note');
@@ -223,8 +199,7 @@ export default class FolderNotesPlugin extends Plugin {
 		}
 		if (!this.settings.autoCreate) return;
 		if (!useModal) return;
-		const folder = this.app.vault.getAbstractFileByPath(path.substring(0,
-			path.lastIndexOf('/' || '\\') >= 0 ? path.lastIndexOf('/') : path.length));
+		const folder = this.app.vault.getAbstractFileByPath(this.getPathFromString(path));
 		if (!(folder instanceof TFolder)) return;
 		const modal = new FolderNameModal(this.app, this, folder);
 		modal.open();
@@ -240,10 +215,27 @@ export default class FolderNotesPlugin extends Plugin {
 
 	async deleteFolderNote(file: TFile) {
 		if (this.settings.showDeleteConfirmation) {
-			new DeleteConfirmationModal(this.app, this, file).open();
-		} else {
-			await this.app.vault.delete(file);
+			return new DeleteConfirmationModal(this.app, this, file).open();
 		}
+
+		await this.app.vault.delete(file);
+	}
+
+	getNameFromPathString(path: string): string {
+		return path.substring(path.lastIndexOf('/' || '\\') >= 0 ? path.lastIndexOf('/' || '\\') + 1 : 0)
+	}
+
+	getPathFromString(path: string): string {
+		const subString = path.lastIndexOf('/' || '\\') >= 0 ? path.lastIndexOf('/') : path.length;
+		return path.substring(0, subString)
+	}
+
+	getExcludedFolderByPath(path: string): ExcludedFolder | undefined {
+		return this.settings.excludeFolders.find((excludedFolder) => {
+			if(excludedFolder.path === path) { return true }
+			if(!excludedFolder.subFolders) { return false }
+			return excludedFolder.path === this.getPathFromString(path)
+		})
 	}
 
 	onunload() {
