@@ -9,6 +9,7 @@ export default class FolderNotesPlugin extends Plugin {
 	folders: TFolder[] = [];
 	settings: FolderNotesSettings;
 	settingsTab: SettingsTab;
+	activeFolderDom: HTMLElement | null;
 	async onload() {
 		console.log('loading folder notes plugin');
 		await this.loadSettings();
@@ -66,6 +67,17 @@ export default class FolderNotesPlugin extends Plugin {
 			if (file) return;
 			this.createFolderNote(path, true, true);
 
+		}));
+
+		this.registerEvent(this.app.workspace.on('file-open', (openFile: TFile | null) => {
+			if(this.activeFolderDom) {
+				this.activeFolderDom.removeClass("is-active")
+				this.activeFolderDom = null;
+			}
+			if(!openFile || !openFile.basename) { return }
+			if(openFile.basename !== openFile.parent.name) { return }
+			this.activeFolderDom = document.querySelector(`[data-path="${openFile.parent.path}"]`)
+			this.activeFolderDom && this.activeFolderDom.addClass("is-active")
 		}));
 
 		this.registerEvent(this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
