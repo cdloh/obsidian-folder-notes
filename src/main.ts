@@ -1,9 +1,10 @@
-import { Plugin, TFile, TFolder, TAbstractFile, Notice, Keymap } from 'obsidian';
+import { Plugin, TFile, TFolder, TAbstractFile, Notice, Keymap, Vault } from 'obsidian';
 import { DEFAULT_SETTINGS, ExcludedFolder, FolderNotesSettings, SettingsTab } from './settings';
 import FolderNameModal from './modals/folderName';
 import { applyTemplate } from './template';
 import { Commands } from './commands';
 import DeleteConfirmationModal from './modals/deleteConfirmation';
+import { FileExplorerWorkspaceLeaf } from './globals';
 export default class FolderNotesPlugin extends Plugin {
 	observer: MutationObserver;
 	folders: TFolder[] = [];
@@ -16,16 +17,8 @@ export default class FolderNotesPlugin extends Plugin {
 		this.settingsTab = new SettingsTab(this.app, this);
 		this.addSettingTab(this.settingsTab);
 		document.body.classList.add('folder-notes-plugin');
-		if (this.settings.hideFolderNote) {
-			document.body.classList.add('hide-folder-note');
-		} else {
-			document.body.classList.remove('hide-folder-note');
-		}
-		if (this.settings.underlineFolder) {
-			document.body.classList.add('folder-note-underline');
-		} else {
-			document.body.classList.remove('folder-note-underline');
-		}
+		if (this.settings.hideFolderNote) { document.body.classList.add('hide-folder-note'); }
+		if (this.settings.underlineFolder) { document.body.classList.add('folder-note-underline'); }
 		new Commands(this.app, this).registerCommands();
 		this.observer = new MutationObserver((mutations: MutationRecord[]) => {
 			mutations.forEach((rec) => {
@@ -34,13 +27,6 @@ export default class FolderNotesPlugin extends Plugin {
 						.forEach((element: HTMLElement) => {
 							if (element.onclick) return;
 							element.onclick = (event: MouseEvent) => this.handleFolderClick(event);
-							if (!this.settings.underlineFolder) return;
-							if (element.classList.contains('has-folder-note') || element.classList.contains('has-not-folder-note')) return;
-							const folder = this.app.vault.getAbstractFileByPath(element.parentElement?.getAttribute('data-path') as string);
-							if (!folder) return element.classList.add('has-not-folder-note');
-							if (this.app.vault.getAbstractFileByPath(folder.path + '/' + folder.name + '.md')) {
-								element.classList.add('has-folder-note');
-							}
 						});
 				}
 			});
@@ -61,6 +47,8 @@ export default class FolderNotesPlugin extends Plugin {
 			const file = this.app.vault.getAbstractFileByPath(path);
 			if (file) return;
 			this.createFolderNote(path, true, true);
+			const fileExplorer = this.getFileExplorer()
+			fileExplorer.view.fileItems[folder.path].titleEl.addClass('has-folder-note')
 
 		}));
 
@@ -76,11 +64,19 @@ export default class FolderNotesPlugin extends Plugin {
 		}));
 
 		this.registerEvent(this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
-			if (!this.settings.syncFolderName) return;
+			if (!this.settings.syncFolderName) {
+				const fileExplorer = this.getFileExplorer()
+				const fileItem = fileExplorer.view.fileItems[file.path];
+				if(!fileItem) { return }
+				// Incase we need to cleanup after ourselves
+				fileItem.titleEl.removeClass('has-folder-note')
+				fileItem.titleEl.removeClass('is-folder-note')
+				return;
+			}
 			const oldFileName = this.getNameFromPathString(oldPath)
 			const oldFilePath = this.getPathFromString(oldPath)
 			if (file instanceof TFolder) {
-				const folder = this.app.vault.getAbstractFileByPath(file?.path);
+				const folder = this.app.vault.getAbstractFileByPath(file.path);
 				if (!folder) return;
 				const excludedFolders = this.settings.excludeFolders.filter(
 					(excludedFolder) => excludedFolder.path.includes(oldPath)
@@ -138,6 +134,9 @@ export default class FolderNotesPlugin extends Plugin {
 				}
 			}
 		}));
+		if (!this.app.workspace.layoutReady) {
+			this.app.workspace.onLayoutReady(async () => this.loadFileClasses());
+		}
 	}
 
 	async handleFolderClick(event: MouseEvent) {
@@ -150,12 +149,6 @@ export default class FolderNotesPlugin extends Plugin {
 		if (excludedFolder && excludedFolder.disableFolderNote) {
 			event.target.onclick = null;
 			event.target.click();
-			event.target.parentElement?.parentElement?.getElementsByClassName('nav-folder-children').item(0)?.querySelectorAll('div.nav-file')
-				.forEach((element: HTMLElement) => {
-					if (element.innerText === (event.target as HTMLElement)?.innerText && element.classList.contains('is-folder-note')) {
-						element.removeClass('is-folder-note');
-					}
-				});
 			return;
 		} else if (excludedFolder && excludedFolder.enableCollapsing || this.settings.enableCollapsing) {
 			event.target.onclick = null;
@@ -164,37 +157,18 @@ export default class FolderNotesPlugin extends Plugin {
 		const path = folder + '/' + event.target.innerText + '.md';
 
 		if (this.app.vault.getAbstractFileByPath(path)) {
-			event.target.classList.remove('has-not-folder-note');
-			event.target.classList.add('has-folder-note');
 			this.openFolderNote(path);
-			if (!this.settings.hideFolderNote) return;
-			event.target.parentElement?.parentElement?.getElementsByClassName('nav-folder-children').item(0)?.querySelectorAll('div.nav-file')
-				.forEach((element: HTMLElement) => {
-					if (element.innerText === (event.target as HTMLElement)?.innerText && !element.classList.contains('is-folder-note')) {
-
-						element.addClass('is-folder-note');
-					}
-				});
-
 		} else if (event.altKey || Keymap.isModEvent(event) == 'tab') {
 			if ((this.settings.altKey && event.altKey) || (this.settings.ctrlKey && Keymap.isModEvent(event) == 'tab')) {
-				this.createFolderNote(path, true, true);
-				event.target.classList.remove('has-not-folder-note');
-				event.target.classList.add('has-folder-note');
-				if (!this.settings.hideFolderNote) return;
-				event.target.parentElement?.parentElement?.getElementsByClassName('nav-folder-children').item(0)?.querySelectorAll('div.nav-file')
-					.forEach((element: HTMLElement) => {
-						if (element.innerText === (event.target as HTMLElement)?.innerText && !element.classList.contains('is-folder-note')) {
-							element.addClass('is-folder-note');
-						}
-					});
+				await this.createFolderNote(path, true, true);
+				const fileExplorer = this.getFileExplorer()
+				fileExplorer.view.fileItems[folder].titleEl.removeClass('has-not-folder-note')
+				fileExplorer.view.fileItems[folder].titleEl.addClass('has-folder-note')
 			} else {
-				event.target.classList.remove('has-folder-note');
 				event.target.onclick = null;
 				event.target.click();
 			}
 		} else {
-			event.target.classList.remove('has-folder-note');
 			event.target.onclick = null;
 			event.target.click();
 		}
@@ -209,6 +183,9 @@ export default class FolderNotesPlugin extends Plugin {
 		if (file) {
 			applyTemplate(this, file, this.settings.templatePath);
 		}
+		const fileExplorer = this.getFileExplorer()
+		fileExplorer.view.fileItems[path].titleEl.addClass('is-folder-note')
+
 		if (!this.settings.autoCreate) return;
 		if (!useModal) return;
 		const folder = this.app.vault.getAbstractFileByPath(this.getPathFromString(path));
@@ -250,10 +227,32 @@ export default class FolderNotesPlugin extends Plugin {
 		})
 	}
 
+	getFileExplorer() {
+		return this.app.workspace.getLeavesOfType('file-explorer')[0] as FileExplorerWorkspaceLeaf;
+	}
+
+	loadFileClasses() {
+		const addClasses = function(file: TAbstractFile) {
+			if(!(file instanceof TFolder)) { return }
+
+			const folderNote = file.children.find(child => {
+				if(!(child instanceof TFile)) return false
+				return child.basename === file.name
+			})
+			if(!folderNote) { return }
+			const fileExplorer = this.getFileExplorer()
+			fileExplorer.view.fileItems[file.path].titleEl.addClass('has-folder-note')
+			fileExplorer.view.fileItems[folderNote.path].titleEl.addClass('is-folder-note')
+		}
+		Vault.recurseChildren(this.app.vault.getRoot(), addClasses.bind(this))
+	}
+
 	onunload() {
 		console.log('unloading folder notes plugin');
 		this.observer.disconnect();
 		document.body.classList.remove('folder-notes-plugin');
+		document.body.classList.remove('hide-folder-note');
+		document.body.classList.remove('folder-note-underline');
 	}
 
 	async loadSettings() {
