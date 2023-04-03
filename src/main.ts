@@ -1,10 +1,10 @@
 import { Plugin, TFile, TFolder, TAbstractFile, Notice, Keymap, Vault } from 'obsidian';
 import { DEFAULT_SETTINGS, ExcludedFolder, FolderNotesSettings, SettingsTab } from './settings';
-import FolderNameModal from './modals/folderName';
 import { applyTemplate } from './template';
 import { Commands } from './commands';
 import DeleteConfirmationModal from './modals/deleteConfirmation';
 import { FileExplorerWorkspaceLeaf } from './globals';
+import { fileURLToPath } from 'url';
 export default class FolderNotesPlugin extends Plugin {
 	observer: MutationObserver;
 	folders: TFolder[] = [];
@@ -39,22 +39,27 @@ export default class FolderNotesPlugin extends Plugin {
 		this.registerEvent(this.app.workspace.on('layout-change', () => { this.loadFileClasses()}))
 		this.registerEvent(this.app.vault.on('delete', (file: TAbstractFile) => {
 			if(!(file instanceof TFile)) { return }
-			if(file.parent.name !== file.basename) { return }
-			this.removeCSSClassToTitleEL(file.parent.path, 'has-folder-note')
+			// parent is null here even if the parent exists
+			// not entirely sure why
+			const parentPath = this.getPathFromString(file.path)
+			const parentName = this.getNameFromPathString(parentPath)
+			if(parentName !== file.basename) { return }
+			this.removeCSSClassFromTitleEL(parentPath, 'has-folder-note')
 		}))
-		this.registerEvent(this.app.vault.on('create', (folder: TAbstractFile) => {
+		this.registerEvent(this.app.vault.on('create', (file: TAbstractFile) => {
 			if (!this.app.workspace.layoutReady) return;
 			if (!this.settings.autoCreate) return;
-			if (!(folder instanceof TFolder)) return;
+			if(file instanceof TFile) { return this.handleFileCreate(file) }
+			if (!(file instanceof TFolder)) return;
 
-			const excludedFolder = this.getExcludedFolderByPath(folder.path)
+			const excludedFolder = this.getExcludedFolderByPath(file.path)
 			if (excludedFolder && excludedFolder.disableAutoCreate) return;
 
-			const path = folder.path + '/' + folder.name + '.md';
-			const file = this.app.vault.getAbstractFileByPath(path);
-			if (file) return;
+			const path = file.path + '/' + file.name + '.md';
+			const folderNote = this.app.vault.getAbstractFileByPath(path);
+			if (folderNote) return;
 			this.createFolderNote(path, true, true);
-			this.addCSSClassToTitleEL(folder.path, 'has-folder-note')
+			this.addCSSClassToTitleEL(file.path, 'has-folder-note')
 
 		}));
 
@@ -65,15 +70,15 @@ export default class FolderNotesPlugin extends Plugin {
 			}
 			if(!openFile || !openFile.basename) { return }
 			if(openFile.basename !== openFile.parent.name) { return }
-			this.activeFolderDom = document.querySelector(`[data-path="${openFile.parent.path}"]`)
-			this.activeFolderDom && this.activeFolderDom.addClass("is-active")
+			this.activeFolderDom = this.getTitleEL(openFile.path)
+			if(this.activeFolderDom) this.activeFolderDom.addClass("is-active")
 		}));
 
 		this.registerEvent(this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
 			if (!this.settings.syncFolderName) {
 				//cleanup after ourselves
-				this.removeCSSClassToTitleEL(file.path, 'has-folder-note')
-				this.removeCSSClassToTitleEL(file.path, 'is-folder-note')
+				this.removeCSSClassFromTitleEL(file.path, 'has-folder-note')
+				this.removeCSSClassFromTitleEL(file.path, 'is-folder-note')
 				return;
 			}
 			if (file instanceof TFolder) {
@@ -106,20 +111,17 @@ export default class FolderNotesPlugin extends Plugin {
 		const path = folder + '/' + event.target.innerText + '.md';
 
 		if (this.app.vault.getAbstractFileByPath(path)) {
-			this.openFolderNote(path);
+			return this.openFolderNote(path);
 		} else if (event.altKey || Keymap.isModEvent(event) == 'tab') {
 			if ((this.settings.altKey && event.altKey) || (this.settings.ctrlKey && Keymap.isModEvent(event) == 'tab')) {
 				await this.createFolderNote(path, true, true);
 				this.addCSSClassToTitleEL(folder, 'has-folder-note')
-				this.removeCSSClassToTitleEL(folder, 'has-not-folder-note')
-			} else {
-				event.target.onclick = null;
-				event.target.click();
+				this.removeCSSClassFromTitleEL(folder, 'has-not-folder-note')
+				return
 			}
-		} else {
-			event.target.onclick = null;
-			event.target.click();
 		}
+		event.target.onclick = null;
+		event.target.click();
 	}
 
 	handleFolderRename(file: TFolder, oldPath: string) {
@@ -162,10 +164,20 @@ export default class FolderNotesPlugin extends Plugin {
 		const oldFilePath = this.getPathFromString(oldPath)
 		const folder = this.app.vault.getAbstractFileByPath(oldFilePath);
 		if (!folder) return;
-		if (folder.name + '.md' === file.name) return;
+		if (folder.name === file.basename) {
+			this.addCSSClassToTitleEL(folder.path, 'has-folder-note')
+			this.addCSSClassToTitleEL(file.path, 'is-folder-note')
+			this.addCSSClassToTitleEL(oldPath, 'is-folder-note')
+			return;
+		}
 
 		const excludedFolder = this.getExcludedFolderByPath(folder.path)
-		if (excludedFolder && excludedFolder.disableSync) return;
+		if (excludedFolder && excludedFolder.disableSync) {
+			this.removeCSSClassFromTitleEL(folder.path, 'has-folder-note')
+			this.removeCSSClassFromTitleEL(file.path, 'is-folder-note')
+			this.removeCSSClassFromTitleEL(oldPath, 'is-folder-note')
+			return
+		};
 		if (oldFileName !== folder.name + '.md') return;
 		let newFolderPath = this.getPathFromString(file.path);
 		if (newFolderPath.lastIndexOf('/') > 0) {
@@ -187,6 +199,12 @@ export default class FolderNotesPlugin extends Plugin {
 		}
 	}
 
+	handleFileCreate(file: TFile) {
+		if(file.basename !== file.parent.name) { return }
+		this.addCSSClassToTitleEL(file.parent.path, 'has-folder-note')
+		this.addCSSClassToTitleEL(file.path, 'is-folder-note', true)
+	}
+
 	async createFolderNote(path: string, openFile: boolean, useModal?: boolean) {
 		const leaf = this.app.workspace.getLeaf(false);
 		const file = await this.app.vault.create(path, '');
@@ -197,13 +215,6 @@ export default class FolderNotesPlugin extends Plugin {
 			applyTemplate(this, file, this.settings.templatePath);
 		}
 		this.addCSSClassToTitleEL(path, 'is-folder-note')
-
-		if (!this.settings.autoCreate) return;
-		if (!useModal) return;
-		const folder = this.app.vault.getAbstractFileByPath(this.getPathFromString(path));
-		if (!(folder instanceof TFolder)) return;
-		const modal = new FolderNameModal(this.app, this, folder);
-		modal.open();
 	}
 
 	async openFolderNote(path: string) {
@@ -235,7 +246,7 @@ export default class FolderNotesPlugin extends Plugin {
 		return this.settings.excludeFolders.find((excludedFolder) => {
 			if(excludedFolder.path === path) { return true }
 			if(!excludedFolder.subFolders) { return false }
-			return excludedFolder.path === this.getPathFromString(path)
+			return this.getPathFromString(path).startsWith(excludedFolder.path)
 		})
 	}
 
@@ -247,18 +258,38 @@ export default class FolderNotesPlugin extends Plugin {
 		return this.getFileExplorer().view;
 	}
 
-	addCSSClassToTitleEL(path: string, cssClass: string) {
+	async addCSSClassToTitleEL(path: string, cssClass: string, waitForCreate = false, count = 0) {
 		const fileExplorer = this.getFileExplorer();
 		if(!fileExplorer) { return }
 		const fileExplorerItem = fileExplorer.view.fileItems[path]
-		if(fileExplorerItem) { fileExplorerItem.titleEl.addClass(cssClass)}
+		if(!fileExplorerItem) {
+			if(waitForCreate && count < 5) {
+				// sleep for a second for the file-explorer event to catch up
+				// this is annoying as in most scanarios our plugin recieves the event before file explorer
+				// If we could guarrantee load order it wouldn't be an issue but we can't
+				// realise this is racey and needs to be fixed.
+				await new Promise(r => setTimeout(r, 500));
+				this.addCSSClassToTitleEL(path, cssClass, waitForCreate, count + 1)
+				return
+			}
+			return
+		}
+		fileExplorerItem.titleEl.addClass(cssClass)
 	}
 
-	removeCSSClassToTitleEL(path: string, cssClass: string) {
+	removeCSSClassFromTitleEL(path: string, cssClass: string) {
 		const fileExplorerView = this.getFileExplorerView();
 		if(!fileExplorerView) { return }
 		const fileExplorerItem = fileExplorerView.fileItems[path]
 		if(fileExplorerItem) { fileExplorerItem.titleEl.removeClass(cssClass)}
+	}
+
+	getTitleEL(path: string): HTMLElement | null {
+		const fileExplorer = this.getFileExplorer();
+		if(!fileExplorer) { return null }
+		const fileExplorerItem = fileExplorer.view.fileItems[path]
+		if(!fileExplorerItem) { return null }
+		return fileExplorerItem.titleEl
 	}
 
 	loadFileClasses() {
