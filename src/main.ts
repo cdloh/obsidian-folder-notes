@@ -48,8 +48,8 @@ export default class FolderNotesPlugin extends Plugin {
 		}))
 		this.registerEvent(this.app.vault.on('create', (file: TAbstractFile) => {
 			if (!this.app.workspace.layoutReady) return;
-			if (!this.settings.autoCreate) return;
 			if(file instanceof TFile) { return this.handleFileCreate(file) }
+			if (!this.settings.autoCreate) return;
 			if (!(file instanceof TFolder)) return;
 
 			const excludedFolder = this.getExcludedFolderByPath(file.path)
@@ -308,6 +308,10 @@ export default class FolderNotesPlugin extends Plugin {
 		document.body.classList.remove('folder-notes-plugin');
 		document.body.classList.remove('hide-folder-note');
 		document.body.classList.remove('folder-note-underline');
+		if(this.activeFolderDom) {
+			this.activeFolderDom.removeClass("is-active")
+			this.activeFolderDom = null;
+		}
 	}
 
 	async loadSettings() {
